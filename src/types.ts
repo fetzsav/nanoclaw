@@ -33,12 +33,16 @@ export interface ContainerConfig {
   env?: Record<string, string>;
 }
 
+export type ChannelType = 'whatsapp' | 'discord';
+
 export interface RegisteredGroup {
   name: string;
   folder: string;
   trigger: string;
   added_at: string;
   containerConfig?: ContainerConfig;
+  /** Channel type - defaults to 'whatsapp' for backwards compatibility */
+  channel?: ChannelType;
 }
 
 export interface Session {

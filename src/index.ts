@@ -42,10 +42,12 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { NewMessage, RegisteredGroup, Session } from './types.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
+import { handleXIpc } from '../.claude/skills/x-integration/host.js';
+import { initDiscordClient, handleDiscordIpc } from '../.claude/skills/add-discord/host.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-let sock: WASocket;
+let sock: WASocket | null = null;
 let lastTimestamp = '';
 let sessions: Session = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
@@ -56,6 +58,8 @@ let lidToPhoneMap: Record<string, string> = {};
 let messageLoopRunning = false;
 let ipcWatcherRunning = false;
 let groupSyncTimerStarted = false;
+let whatsappEnabled = false;
+let schedulerStarted = false;
 
 /**
  * Translate a JID from LID format to phone format if we have a mapping.
@@ -73,11 +77,21 @@ function translateJid(jid: string): string {
 }
 
 async function setTyping(jid: string, isTyping: boolean): Promise<void> {
+  if (!sock) return;
   try {
     await sock.sendPresenceUpdate(isTyping ? 'composing' : 'paused', jid);
   } catch (err) {
     logger.debug({ jid, err }, 'Failed to update typing status');
   }
+}
+
+/**
+ * Check if WhatsApp authentication exists
+ */
+function hasWhatsAppAuth(): boolean {
+  const authDir = path.join(STORE_DIR, 'auth');
+  const credsPath = path.join(authDir, 'creds.json');
+  return fs.existsSync(credsPath);
 }
 
 function loadState(): void {
@@ -127,6 +141,11 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
  * Called on startup, daily, and on-demand via IPC.
  */
 async function syncGroupMetadata(force = false): Promise<void> {
+  if (!sock) {
+    logger.debug('WhatsApp not connected, skipping group sync');
+    return;
+  }
+
   // Check if we need to sync (skip if synced recently, unless forced)
   if (!force) {
     const lastSync = getLastGroupSync();
@@ -287,12 +306,87 @@ async function runAgent(
 }
 
 async function sendMessage(jid: string, text: string): Promise<void> {
+  // Discord channels use discord:{channelId} format
+  if (jid.startsWith('discord:')) {
+    // Discord messages are handled via IPC, not directly here
+    logger.debug({ jid }, 'Discord message should be sent via IPC');
+    return;
+  }
+
+  // WhatsApp message
+  if (!sock) {
+    logger.warn({ jid }, 'Cannot send WhatsApp message - not connected');
+    return;
+  }
+
   try {
     await sock.sendMessage(jid, { text });
     logger.info({ jid, length: text.length }, 'Message sent');
   } catch (err) {
     logger.error({ jid, err }, 'Failed to send message');
   }
+}
+
+/**
+ * Process a Discord message by routing it to the container agent.
+ * Supports both:
+ * 1. Discord channels mapped to existing WhatsApp groups (legacy)
+ * 2. Discord-native groups (discord:{channelId} as the key)
+ */
+async function processDiscordMessage(
+  channelId: string,
+  content: string,
+  senderName: string,
+  groupFolder: string,
+  isMain: boolean,
+): Promise<string | null> {
+  const discordJid = `discord:${channelId}`;
+
+  // First check if there's a Discord-native group
+  let group = registeredGroups[discordJid];
+  let chatJid = discordJid;
+
+  // If no Discord-native group, try to find by folder name (legacy WhatsApp mapping)
+  if (!group) {
+    const groupEntry = Object.entries(registeredGroups).find(
+      ([, g]) => g.folder === groupFolder,
+    );
+    if (groupEntry) {
+      [chatJid, group] = groupEntry;
+    }
+  }
+
+  // If still no group, auto-register as Discord-native group
+  if (!group) {
+    logger.info({ channelId, groupFolder }, 'Auto-registering Discord channel as group');
+    group = {
+      name: `Discord: ${groupFolder}`,
+      folder: groupFolder,
+      trigger: '@', // Discord uses @mentions
+      added_at: new Date().toISOString(),
+      channel: 'discord',
+    };
+    registerGroup(discordJid, group);
+  }
+
+  // Format message similar to WhatsApp processing
+  const escapeXml = (s: string) =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+  const timestamp = new Date().toISOString();
+  const prompt = `<messages>\n<message sender="${escapeXml(senderName)}" time="${timestamp}" channel="discord:${channelId}">${escapeXml(content)}</message>\n</messages>`;
+
+  logger.info(
+    { group: group.name, sender: senderName, channel: channelId },
+    'Processing Discord message',
+  );
+
+  const response = await runAgent(group, prompt, chatJid);
+  return response;
 }
 
 function startIpcWatcher(): void {
@@ -341,14 +435,22 @@ function startIpcWatcher(): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  await sendMessage(
-                    data.chatJid,
-                    `${ASSISTANT_NAME}: ${data.text}`,
-                  );
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC message sent',
-                  );
+                  // Route to appropriate channel
+                  if (data.chatJid.startsWith('discord:')) {
+                    // Discord messages handled via handleDiscordIpc
+                    logger.debug({ chatJid: data.chatJid }, 'Discord IPC message - use discord_send tool instead');
+                  } else if (sock) {
+                    await sendMessage(
+                      data.chatJid,
+                      `${ASSISTANT_NAME}: ${data.text}`,
+                    );
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC message sent',
+                    );
+                  } else {
+                    logger.warn({ chatJid: data.chatJid }, 'Cannot send - WhatsApp not connected');
+                  }
                 } else {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
@@ -433,6 +535,7 @@ async function processTaskIpc(
     folder?: string;
     trigger?: string;
     containerConfig?: RegisteredGroup['containerConfig'];
+    channel?: 'whatsapp' | 'discord';
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -600,7 +703,9 @@ async function processTaskIpc(
           { sourceGroup },
           'Group metadata refresh requested via IPC',
         );
-        await syncGroupMetadata(true);
+        if (sock) {
+          await syncGroupMetadata(true);
+        }
         // Write updated snapshot immediately
         const availableGroups = getAvailableGroups();
         const { writeGroupsSnapshot: writeGroups } =
@@ -635,6 +740,7 @@ async function processTaskIpc(
           trigger: data.trigger,
           added_at: new Date().toISOString(),
           containerConfig: data.containerConfig,
+          channel: data.channel,
         });
       } else {
         logger.warn(
@@ -644,8 +750,17 @@ async function processTaskIpc(
       }
       break;
 
-    default:
+    default: {
+      // Try X integration handler
+      const xHandled = await handleXIpc(data, sourceGroup, isMain, DATA_DIR);
+      if (xHandled) break;
+
+      // Try Discord integration handler
+      const discordHandled = await handleDiscordIpc(data, sourceGroup, isMain, DATA_DIR);
+      if (discordHandled) break;
+
       logger.warn({ type: data.type }, 'Unknown IPC task type');
+    }
   }
 }
 
@@ -692,9 +807,10 @@ async function connectWhatsApp(): Promise<void> {
       }
     } else if (connection === 'open') {
       logger.info('Connected to WhatsApp');
-      
+      whatsappEnabled = true;
+
       // Build LID to phone mapping from auth state for self-chat translation
-      if (sock.user) {
+      if (sock?.user) {
         const phoneUser = sock.user.id.split(':')[0];
         const lidUser = sock.user.lid?.split(':')[0];
         if (lidUser && phoneUser) {
@@ -702,7 +818,7 @@ async function connectWhatsApp(): Promise<void> {
           logger.debug({ lidUser, phoneUser }, 'LID to phone mapping set');
         }
       }
-      
+
       // Sync group metadata on startup (respects 24h cache)
       syncGroupMetadata().catch((err) =>
         logger.error({ err }, 'Initial group sync failed'),
@@ -716,12 +832,8 @@ async function connectWhatsApp(): Promise<void> {
           );
         }, GROUP_SYNC_INTERVAL_MS);
       }
-      startSchedulerLoop({
-        sendMessage,
-        registeredGroups: () => registeredGroups,
-        getSessions: () => sessions,
-      });
-      startIpcWatcher();
+
+      // Start WhatsApp message loop
       startMessageLoop();
     }
   });
@@ -834,12 +946,74 @@ function ensureContainerSystemRunning(): void {
   }
 }
 
+/**
+ * Start common services that run regardless of which channels are enabled.
+ */
+function startCommonServices(): void {
+  if (schedulerStarted) return;
+  schedulerStarted = true;
+
+  // Start scheduler loop (handles scheduled tasks)
+  startSchedulerLoop({
+    sendMessage,
+    registeredGroups: () => registeredGroups,
+    getSessions: () => sessions,
+  });
+
+  // Start IPC watcher (handles agent-to-host communication)
+  startIpcWatcher();
+
+  logger.info('Common services started');
+}
+
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
   loadState();
-  await connectWhatsApp();
+
+  // Start common services first
+  startCommonServices();
+
+  // Track which channels are enabled
+  const channels: string[] = [];
+
+  // Connect WhatsApp if auth exists
+  if (hasWhatsAppAuth()) {
+    logger.info('WhatsApp auth found, connecting...');
+    channels.push('whatsapp');
+    // connectWhatsApp runs in background (event-driven)
+    connectWhatsApp().catch((err) => {
+      logger.error({ err }, 'Failed to connect WhatsApp');
+    });
+  } else {
+    logger.info('No WhatsApp auth found, skipping WhatsApp');
+  }
+
+  // Initialize Discord (silently skips if not configured)
+  try {
+    await initDiscordClient({
+      onMessage: processDiscordMessage,
+    });
+    // Check if Discord actually connected by looking for auth file
+    const discordAuthPath = path.join(DATA_DIR, 'discord-auth.json');
+    if (fs.existsSync(discordAuthPath)) {
+      channels.push('discord');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to initialize Discord');
+  }
+
+  if (channels.length === 0) {
+    logger.warn('No channels configured! Run setup for WhatsApp or Discord.');
+    logger.info('To set up WhatsApp: run /setup in Claude Code');
+    logger.info('To set up Discord: npx tsx .claude/skills/add-discord/scripts/setup.ts');
+  } else {
+    logger.info({ channels }, 'NanoClaw running');
+  }
+
+  // Keep process alive
+  await new Promise(() => {});
 }
 
 main().catch((err) => {
