@@ -165,7 +165,7 @@ function buildVolumeMounts(
 function buildContainerArgs(mounts: VolumeMount[]): string[] {
   const args: string[] = ['run', '-i', '--rm'];
 
-  // Apple Container: --mount for readonly, -v for read-write
+  // Docker: --mount for readonly, -v for read-write
   for (const mount of mounts) {
     if (mount.readonly) {
       args.push(
@@ -219,7 +219,7 @@ export async function runContainerAgent(
   fs.mkdirSync(logsDir, { recursive: true });
 
   return new Promise((resolve) => {
-    const container = spawn('container', containerArgs, {
+    const container = spawn('docker', containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
