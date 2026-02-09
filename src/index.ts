@@ -42,6 +42,7 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { NewMessage, RegisteredGroup, Session } from './types.js';
 import { loadJson, saveJson } from './utils.js';
 import { logger } from './logger.js';
+import { runLocalAgent } from './local-agent.js';
 import { handleXIpc } from '../.claude/skills/x-integration/host.js';
 import { initDiscordClient, handleDiscordIpc } from '../.claude/skills/add-discord/host.js';
 
@@ -276,14 +277,18 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
+  const agentInput = {
+    prompt,
+    sessionId,
+    groupFolder: group.folder,
+    chatJid,
+    isMain,
+  };
+
   try {
-    const output = await runContainerAgent(group, {
-      prompt,
-      sessionId,
-      groupFolder: group.folder,
-      chatJid,
-      isMain,
-    });
+    const output = group.runtime === 'local'
+      ? await runLocalAgent(group, agentInput)
+      : await runContainerAgent(group, agentInput);
 
     if (output.newSessionId) {
       sessions[group.folder] = output.newSessionId;
@@ -292,15 +297,15 @@ async function runAgent(
 
     if (output.status === 'error') {
       logger.error(
-        { group: group.name, error: output.error },
-        'Container agent error',
+        { group: group.name, error: output.error, runtime: group.runtime || 'claude' },
+        'Agent error',
       );
       return null;
     }
 
     return output.result;
   } catch (err) {
-    logger.error({ group: group.name, err }, 'Agent error');
+    logger.error({ group: group.name, err, runtime: group.runtime || 'claude' }, 'Agent error');
     return null;
   }
 }
@@ -906,7 +911,15 @@ async function startMessageLoop(): Promise<void> {
   }
 }
 
-function ensureContainerSystemRunning(): void {
+function ensureContainerSystemRunning(groups: Record<string, RegisteredGroup>): void {
+  // Check if any group needs Docker (claude runtime or unset which defaults to claude)
+  const needsDocker = Object.values(groups).some(g => !g.runtime || g.runtime === 'claude');
+
+  if (!needsDocker) {
+    logger.info('All groups use local runtime, skipping Docker check');
+    return;
+  }
+
   try {
     execSync('docker info', { stdio: 'pipe' });
     logger.debug('Docker daemon is running');
@@ -961,10 +974,10 @@ function startCommonServices(): void {
 }
 
 async function main(): Promise<void> {
-  ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
   loadState();
+  ensureContainerSystemRunning(registeredGroups);
 
   // Start common services first
   startCommonServices();

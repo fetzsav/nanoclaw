@@ -1,5 +1,8 @@
 import path from 'path';
 
+import { LocalLlmConfig } from './types.js';
+import { loadJson } from './utils.js';
+
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Andy';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
@@ -45,3 +48,36 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// Local LLM defaults
+const LOCAL_LLM_DEFAULTS = {
+  baseUrl: 'http://localhost:11434/v1',
+  model: 'qwen2.5:7b',
+  temperature: 0.7,
+  maxTokens: 2048,
+  timeout: 300000,
+};
+
+export interface FullLocalLlmConfig {
+  baseUrl: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  timeout: number;
+}
+
+/**
+ * Load local LLM config: defaults → data/local-llm-config.json → per-group overrides.
+ */
+export function loadLocalLlmConfig(groupOverrides?: LocalLlmConfig): FullLocalLlmConfig {
+  const filePath = path.join(DATA_DIR, 'local-llm-config.json');
+  const fileConfig = loadJson<Partial<FullLocalLlmConfig>>(filePath, {});
+
+  return {
+    baseUrl: fileConfig.baseUrl ?? LOCAL_LLM_DEFAULTS.baseUrl,
+    model: groupOverrides?.model ?? fileConfig.model ?? LOCAL_LLM_DEFAULTS.model,
+    temperature: groupOverrides?.temperature ?? fileConfig.temperature ?? LOCAL_LLM_DEFAULTS.temperature,
+    maxTokens: groupOverrides?.maxTokens ?? fileConfig.maxTokens ?? LOCAL_LLM_DEFAULTS.maxTokens,
+    timeout: fileConfig.timeout ?? LOCAL_LLM_DEFAULTS.timeout,
+  };
+}

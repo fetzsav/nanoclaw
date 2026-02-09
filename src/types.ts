@@ -35,6 +35,14 @@ export interface ContainerConfig {
 
 export type ChannelType = 'whatsapp' | 'discord';
 
+export type RuntimeType = 'claude' | 'local';
+
+export interface LocalLlmConfig {
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
 export interface RegisteredGroup {
   name: string;
   folder: string;
@@ -43,6 +51,10 @@ export interface RegisteredGroup {
   containerConfig?: ContainerConfig;
   /** Channel type - defaults to 'whatsapp' for backwards compatibility */
   channel?: ChannelType;
+  /** Agent runtime - 'claude' (default) uses Docker+Claude Code, 'local' uses Ollama */
+  runtime?: RuntimeType;
+  /** Per-group overrides for local LLM settings */
+  localLlmConfig?: LocalLlmConfig;
 }
 
 export interface Session {

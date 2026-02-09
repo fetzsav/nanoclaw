@@ -10,6 +10,7 @@ import {
   TIMEZONE,
 } from './config.js';
 import { runContainerAgent, writeTasksSnapshot } from './container-runner.js';
+import { runLocalAgent } from './local-agent.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -85,15 +86,19 @@ async function runTask(
   const sessionId =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
 
+  const agentInput = {
+    prompt: task.prompt,
+    sessionId,
+    groupFolder: task.group_folder,
+    chatJid: task.chat_jid,
+    isMain,
+    isScheduledTask: true,
+  };
+
   try {
-    const output = await runContainerAgent(group, {
-      prompt: task.prompt,
-      sessionId,
-      groupFolder: task.group_folder,
-      chatJid: task.chat_jid,
-      isMain,
-      isScheduledTask: true,
-    });
+    const output = group.runtime === 'local'
+      ? await runLocalAgent(group, agentInput)
+      : await runContainerAgent(group, agentInput);
 
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
