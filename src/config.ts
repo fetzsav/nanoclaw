@@ -64,6 +64,7 @@ export interface FullLocalLlmConfig {
   temperature: number;
   maxTokens: number;
   timeout: number;
+  apiKey?: string;
 }
 
 /**
@@ -79,5 +80,6 @@ export function loadLocalLlmConfig(groupOverrides?: LocalLlmConfig): FullLocalLl
     temperature: groupOverrides?.temperature ?? fileConfig.temperature ?? LOCAL_LLM_DEFAULTS.temperature,
     maxTokens: groupOverrides?.maxTokens ?? fileConfig.maxTokens ?? LOCAL_LLM_DEFAULTS.maxTokens,
     timeout: fileConfig.timeout ?? LOCAL_LLM_DEFAULTS.timeout,
+    apiKey: (fileConfig as Record<string, unknown>).apiKey as string | undefined,
   };
 }

@@ -14,6 +14,7 @@ const EBAY_AUTH_FILE = path.join(DATA_DIR, 'ebay-auth.json');
 // eBay API base URLs (production)
 const EBAY_API_BASE = 'https://api.ebay.com';
 const EBAY_AUTH_URL = 'https://api.ebay.com/identity/v1/oauth2/token';
+const EBAY_API_TIMEOUT_MS = parseInt(process.env.EBAY_API_TIMEOUT_MS || '20000', 10);
 
 interface EbayAuthConfig {
   clientId: string;
@@ -48,6 +49,26 @@ export class EbayApi {
     return Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString('base64');
   }
 
+  private async fetchWithTimeout(
+    url: string,
+    options: RequestInit,
+    timeoutMs: number,
+    label: string,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new Error(`${label} timed out after ${timeoutMs}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   // --- Token Management ---
 
   /** Get a user access token (auto-refreshes if expired) */
@@ -62,7 +83,9 @@ export class EbayApi {
 
     logger.info('Refreshing eBay user access token');
 
-    const response = await fetch(EBAY_AUTH_URL, {
+    const response = await this.fetchWithTimeout(
+      EBAY_AUTH_URL,
+      {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -72,7 +95,10 @@ export class EbayApi {
         grant_type: 'refresh_token',
         refresh_token: this.config.refreshToken,
       }),
-    });
+      },
+      EBAY_API_TIMEOUT_MS,
+      'eBay token refresh',
+    );
 
     if (!response.ok) {
       const text = await response.text();
@@ -98,7 +124,9 @@ export class EbayApi {
 
     logger.info('Getting eBay application token');
 
-    const response = await fetch(EBAY_AUTH_URL, {
+    const response = await this.fetchWithTimeout(
+      EBAY_AUTH_URL,
+      {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -108,7 +136,10 @@ export class EbayApi {
         grant_type: 'client_credentials',
         scope: 'https://api.ebay.com/oauth/api_scope',
       }),
-    });
+      },
+      EBAY_API_TIMEOUT_MS,
+      'eBay application token',
+    );
 
     if (!response.ok) {
       const text = await response.text();
@@ -149,7 +180,12 @@ export class EbayApi {
     const url = `${EBAY_API_BASE}${endpoint}`;
     logger.debug({ method, url }, 'eBay API call');
 
-    const response = await fetch(url, options);
+    const response = await this.fetchWithTimeout(
+      url,
+      options,
+      EBAY_API_TIMEOUT_MS,
+      `eBay API ${method} ${endpoint}`,
+    );
 
     if (response.status === 204) return { success: true };
 

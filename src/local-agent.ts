@@ -69,361 +69,25 @@ function writeIpcFile(dir: string, data: object): string {
 }
 
 // --- Tool definitions (OpenAI function calling format) ---
+// Kept minimal to reduce token usage with hosted LLM APIs
 
-function getToolDefinitions(isMain: boolean): ToolDefinition[] {
-  const tools: ToolDefinition[] = [
-    {
-      type: 'function',
-      function: {
-        name: 'send_message',
-        description: 'Send a message to the current WhatsApp group.',
-        parameters: {
-          type: 'object',
-          properties: {
-            text: { type: 'string', description: 'The message text to send' },
-          },
-          required: ['text'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'schedule_task',
-        description: 'Schedule a recurring or one-time task. schedule_type: cron, interval, or once. context_mode: "group" (uses chat history) or "isolated" (fresh session).',
-        parameters: {
-          type: 'object',
-          properties: {
-            prompt: { type: 'string', description: 'What the agent should do when the task runs' },
-            schedule_type: { type: 'string', enum: ['cron', 'interval', 'once'], description: 'cron, interval, or once' },
-            schedule_value: { type: 'string', description: 'cron expression, milliseconds, or ISO timestamp' },
-            context_mode: { type: 'string', enum: ['group', 'isolated'], description: 'group or isolated (default: group)' },
-          },
-          required: ['prompt', 'schedule_type', 'schedule_value'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'list_tasks',
-        description: "List all scheduled tasks for this group.",
-        parameters: {
-          type: 'object',
-          properties: {},
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'pause_task',
-        description: 'Pause a scheduled task.',
-        parameters: {
-          type: 'object',
-          properties: {
-            task_id: { type: 'string', description: 'The task ID to pause' },
-          },
-          required: ['task_id'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'resume_task',
-        description: 'Resume a paused task.',
-        parameters: {
-          type: 'object',
-          properties: {
-            task_id: { type: 'string', description: 'The task ID to resume' },
-          },
-          required: ['task_id'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'cancel_task',
-        description: 'Cancel and delete a scheduled task.',
-        parameters: {
-          type: 'object',
-          properties: {
-            task_id: { type: 'string', description: 'The task ID to cancel' },
-          },
-          required: ['task_id'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'discord_send',
-        description: 'Send a message to a Discord channel.',
-        parameters: {
-          type: 'object',
-          properties: {
-            channel_id: { type: 'string', description: 'The Discord channel ID' },
-            text: { type: 'string', description: 'The message text to send' },
-          },
-          required: ['channel_id', 'text'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'read_file',
-        description: 'Read a file from the group directory. Use this to read memory, notes, or any files you previously saved.',
-        parameters: {
-          type: 'object',
-          properties: {
-            path: { type: 'string', description: 'Relative path within the group directory (e.g. "MEMORY.md", "notes/todo.md")' },
-          },
-          required: ['path'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'write_file',
-        description: 'Write content to a file in the group directory. Creates parent directories if needed. Use this to save memory, notes, or data.',
-        parameters: {
-          type: 'object',
-          properties: {
-            path: { type: 'string', description: 'Relative path within the group directory (e.g. "MEMORY.md", "notes/todo.md")' },
-            content: { type: 'string', description: 'The content to write to the file' },
-          },
-          required: ['path', 'content'],
-        },
-      },
-    },
-    // --- eBay tools ---
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_search',
-        description: 'Search active eBay listings. Returns item summaries with prices.',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Search query (e.g. "vintage camera", "iPhone 15 Pro")' },
-            category_id: { type: 'string', description: 'Optional eBay category ID to narrow results' },
-            sort: { type: 'string', enum: ['price', '-price', 'newlyListed', 'endingSoonest'], description: 'Sort order' },
-            limit: { type: 'string', description: 'Max results (1-200, default 10)' },
-          },
-          required: ['query'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_get_item',
-        description: 'Get detailed information about a specific eBay item.',
-        parameters: {
-          type: 'object',
-          properties: {
-            item_id: { type: 'string', description: 'The eBay item ID (e.g. "v1|123456789|0")' },
-          },
-          required: ['item_id'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_get_category_suggestions',
-        description: 'Find the best eBay category for a product. Use this before creating a listing.',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Product name or description to categorize' },
-          },
-          required: ['query'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_create_listing',
-        description: 'Create a new eBay listing (inventory item + offer). After creating, use ebay_publish_listing to make it live.',
-        parameters: {
-          type: 'object',
-          properties: {
-            sku: { type: 'string', description: 'Unique SKU identifier for this item' },
-            title: { type: 'string', description: 'Listing title (max 80 chars)' },
-            description: { type: 'string', description: 'Item description (HTML supported)' },
-            condition: { type: 'string', enum: ['NEW', 'LIKE_NEW', 'VERY_GOOD', 'GOOD', 'ACCEPTABLE', 'FOR_PARTS_OR_NOT_WORKING'], description: 'Item condition' },
-            price: { type: 'string', description: 'Price in USD (e.g. "29.99")' },
-            quantity: { type: 'string', description: 'Quantity available' },
-            image_urls: { type: 'string', description: 'Comma-separated image URLs' },
-            category_id: { type: 'string', description: 'eBay category ID (use ebay_get_category_suggestions to find)' },
-            aspects: { type: 'string', description: 'JSON object of item aspects (e.g. {"Brand":["Sony"],"Model":["A7III"]})' },
-          },
-          required: ['sku', 'title', 'description', 'condition', 'price', 'quantity', 'image_urls', 'category_id'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_publish_listing',
-        description: 'Publish a draft offer to make it live on eBay.',
-        parameters: {
-          type: 'object',
-          properties: {
-            offer_id: { type: 'string', description: 'The offer ID returned from ebay_create_listing' },
-          },
-          required: ['offer_id'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_end_listing',
-        description: 'End/withdraw an active eBay listing.',
-        parameters: {
-          type: 'object',
-          properties: {
-            offer_id: { type: 'string', description: 'The offer ID to withdraw' },
-          },
-          required: ['offer_id'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_update_price_quantity',
-        description: 'Update the price and/or quantity of an existing inventory item and its offers.',
-        parameters: {
-          type: 'object',
-          properties: {
-            sku: { type: 'string', description: 'The SKU of the inventory item' },
-            price: { type: 'string', description: 'New price in USD (e.g. "19.99")' },
-            quantity: { type: 'string', description: 'New quantity available' },
-          },
-          required: ['sku'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_get_orders',
-        description: 'List recent eBay orders.',
-        parameters: {
-          type: 'object',
-          properties: {
-            status: { type: 'string', enum: ['ACTIVE', 'COMPLETED', 'CANCELLED'], description: 'Filter by order status' },
-            limit: { type: 'string', description: 'Max results (default 50)' },
-          },
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_get_order',
-        description: 'Get details of a specific eBay order.',
-        parameters: {
-          type: 'object',
-          properties: {
-            order_id: { type: 'string', description: 'The eBay order ID' },
-          },
-          required: ['order_id'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_mark_shipped',
-        description: 'Add tracking information to an order.',
-        parameters: {
-          type: 'object',
-          properties: {
-            order_id: { type: 'string', description: 'The eBay order ID' },
-            tracking_number: { type: 'string', description: 'The tracking number' },
-            carrier: { type: 'string', description: 'Shipping carrier (e.g. "USPS", "UPS", "FedEx")' },
-          },
-          required: ['order_id', 'tracking_number', 'carrier'],
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_get_inventory',
-        description: 'List your eBay inventory items.',
-        parameters: {
-          type: 'object',
-          properties: {
-            limit: { type: 'string', description: 'Max results (default 25)' },
-            offset: { type: 'string', description: 'Offset for pagination' },
-          },
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ebay_get_policies',
-        description: 'List seller policies (needed for creating listings).',
-        parameters: {
-          type: 'object',
-          properties: {
-            type: { type: 'string', enum: ['fulfillment', 'payment', 'return'], description: 'Policy type' },
-          },
-          required: ['type'],
-        },
-      },
-    },
+function tool(name: string, description: string, properties: Record<string, { type: string; description?: string; enum?: string[] }>, required?: string[]): ToolDefinition {
+  return { type: 'function', function: { name, description, parameters: { type: 'object', properties, required } } };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function getToolDefinitions(_isMain: boolean): ToolDefinition[] {
+  return [
+    tool('send_message', 'Send message to current chat', { text: { type: 'string' } }, ['text']),
+    tool('read_file', 'Read file from group dir', { path: { type: 'string' } }, ['path']),
+    tool('write_file', 'Write file to group dir', { path: { type: 'string' }, content: { type: 'string' } }, ['path', 'content']),
+    tool('ebay_search', 'Search eBay listings. Returns top 3 results.', { query: { type: 'string' } }, ['query']),
+    tool('ebay_get_item', 'Get eBay item details', { item_id: { type: 'string' } }, ['item_id']),
+    tool('ebay_get_orders', 'List recent eBay orders', {}),
+    tool('ebay_get_order', 'Get order details', { order_id: { type: 'string' } }, ['order_id']),
+    tool('ebay_get_inventory', 'List inventory items', {}),
+    tool('ebay_mark_shipped', 'Add tracking to order', { order_id: { type: 'string' }, tracking_number: { type: 'string' }, carrier: { type: 'string' } }, ['order_id', 'tracking_number', 'carrier']),
   ];
-
-  // Main-only tools
-  if (isMain) {
-    tools.push(
-      {
-        type: 'function',
-        function: {
-          name: 'register_group',
-          description: 'Register a new WhatsApp group. Main group only.',
-          parameters: {
-            type: 'object',
-            properties: {
-              jid: { type: 'string', description: 'The WhatsApp JID' },
-              name: { type: 'string', description: 'Display name' },
-              folder: { type: 'string', description: 'Folder name (lowercase, hyphens)' },
-              trigger: { type: 'string', description: 'Trigger word' },
-            },
-            required: ['jid', 'name', 'folder', 'trigger'],
-          },
-        },
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'x_post',
-          description: 'Post a tweet to X (Twitter). Main group only. Max 280 chars.',
-          parameters: {
-            type: 'object',
-            properties: {
-              content: { type: 'string', description: 'The tweet content (max 280 chars)' },
-            },
-            required: ['content'],
-          },
-        },
-      },
-    );
-  }
-
-  return tools;
 }
 
 // --- File path validation ---
@@ -446,6 +110,93 @@ function validateGroupPath(relativePath: string, groupFolder: string): string | 
   return resolved;
 }
 
+// --- eBay response summarizers (reduce tokens for LLM) ---
+
+function summarizeSearchResults(raw: unknown): string {
+  const data = raw as { total?: number; itemSummaries?: Array<Record<string, unknown>> };
+  if (!data.itemSummaries?.length) return 'No results found.';
+  const items = data.itemSummaries.map((item: Record<string, unknown>) => {
+    const price = item.price as { value?: string; currency?: string } | undefined;
+    return {
+      id: item.itemId,
+      title: item.title,
+      price: price ? `${price.value} ${price.currency}` : 'N/A',
+      condition: item.condition,
+      url: item.itemWebUrl,
+    };
+  });
+  return `Found ${data.total ?? items.length} results:\n${JSON.stringify(items, null, 2)}`;
+}
+
+function summarizeItem(raw: unknown): string {
+  const item = raw as Record<string, unknown>;
+  const price = item.price as { value?: string; currency?: string } | undefined;
+  const seller = item.seller as { username?: string; feedbackScore?: number } | undefined;
+  return JSON.stringify({
+    id: item.itemId, title: item.title,
+    price: price ? `${price.value} ${price.currency}` : 'N/A',
+    condition: item.condition, description: (item.shortDescription as string)?.slice(0, 200),
+    seller: seller ? `${seller.username} (${seller.feedbackScore})` : 'N/A',
+    url: item.itemWebUrl,
+  }, null, 2);
+}
+
+function summarizeOrders(raw: unknown): string {
+  const data = raw as { total?: number; orders?: Array<Record<string, unknown>> };
+  if (!data.orders?.length) return 'No orders found.';
+  const orders = data.orders.map((o: Record<string, unknown>) => {
+    const total = o.pricingSummary as { total?: { value?: string; currency?: string } } | undefined;
+    return {
+      id: o.orderId,
+      status: o.orderFulfillmentStatus,
+      total: total?.total ? `${total.total.value} ${total.total.currency}` : 'N/A',
+      buyer: (o.buyer as Record<string, unknown>)?.username,
+      date: o.creationDate,
+      items: ((o.lineItems as Array<Record<string, unknown>>) || []).map(
+        (li: Record<string, unknown>) => ({
+          title: (li.title as string)?.slice(0, 60),
+          url: li.legacyItemId ? `https://www.ebay.com/itm/${li.legacyItemId}` : undefined,
+        })
+      ),
+    };
+  });
+  return `${data.total ?? orders.length} orders:\n${JSON.stringify(orders, null, 2)}`;
+}
+
+function summarizeOrder(raw: unknown): string {
+  const o = raw as Record<string, unknown>;
+  const total = o.pricingSummary as { total?: { value?: string; currency?: string } } | undefined;
+  const shipping = o.fulfillmentStartInstructions as Array<{ shippingStep?: { shipTo?: Record<string, unknown> } }> | undefined;
+  return JSON.stringify({
+    id: o.orderId, status: o.orderFulfillmentStatus,
+    total: total?.total ? `${total.total.value} ${total.total.currency}` : 'N/A',
+    buyer: (o.buyer as Record<string, unknown>)?.username,
+    date: o.creationDate,
+    items: ((o.lineItems as Array<Record<string, unknown>>) || []).map((li: Record<string, unknown>) => ({
+      title: (li.title as string)?.slice(0, 60), sku: li.sku, quantity: li.quantity,
+      url: li.legacyItemId ? `https://www.ebay.com/itm/${li.legacyItemId}` : undefined,
+    })),
+    shipTo: shipping?.[0]?.shippingStep?.shipTo,
+  }, null, 2);
+}
+
+function summarizeInventory(raw: unknown, listingUrls?: Record<string, string>): string {
+  const data = raw as { total?: number; inventoryItems?: Array<Record<string, unknown>> };
+  if (!data.inventoryItems?.length) return 'No inventory items found.';
+  const items = data.inventoryItems.map((item: Record<string, unknown>) => {
+    const product = item.product as Record<string, unknown> | undefined;
+    const avail = item.availability as { shipToLocationAvailability?: { quantity?: number } } | undefined;
+    const sku = item.sku as string;
+    return {
+      sku, title: product?.title,
+      quantity: avail?.shipToLocationAvailability?.quantity ?? 'N/A',
+      condition: item.condition,
+      url: listingUrls?.[sku] || undefined,
+    };
+  });
+  return `${data.total ?? items.length} items:\n${JSON.stringify(items, null, 2)}`;
+}
+
 // --- Tool execution ---
 
 let ebayApiInstance: EbayApi | null = null;
@@ -462,6 +213,7 @@ async function executeTool(
   args: Record<string, unknown>,
   ctx: { chatJid: string; groupFolder: string; isMain: boolean; ipcDir: string },
 ): Promise<string> {
+  args = args || {};
   const messagesDir = path.join(ctx.ipcDir, 'messages');
   const tasksDir = path.join(ctx.ipcDir, 'tasks');
 
@@ -584,15 +336,15 @@ async function executeTool(
       const result = await api.searchItems(args.query as string, {
         categoryId: args.category_id as string | undefined,
         sort: args.sort as string | undefined,
-        limit: args.limit ? parseInt(args.limit as string, 10) : 10,
+        limit: Math.min(args.limit ? parseInt(args.limit as string, 10) : 3, 3),
       });
-      return JSON.stringify(result, null, 2);
+      return summarizeSearchResults(result);
     }
 
     case 'ebay_get_item': {
       const api = getEbayApi();
       const result = await api.getItem(args.item_id as string);
-      return JSON.stringify(result, null, 2);
+      return summarizeItem(result);
     }
 
     case 'ebay_get_category_suggestions': {
@@ -666,18 +418,14 @@ async function executeTool(
 
     case 'ebay_get_orders': {
       const api = getEbayApi();
-      let filter: string | undefined;
-      if (args.status) {
-        filter = `orderfulfillmentstatus:{${args.status}}`;
-      }
-      const result = await api.getOrders(filter);
-      return JSON.stringify(result, null, 2);
+      const result = await api.getOrders();
+      return summarizeOrders(result);
     }
 
     case 'ebay_get_order': {
       const api = getEbayApi();
       const result = await api.getOrder(args.order_id as string);
-      return JSON.stringify(result, null, 2);
+      return summarizeOrder(result);
     }
 
     case 'ebay_mark_shipped': {
@@ -695,7 +443,25 @@ async function executeTool(
         args.limit ? parseInt(args.limit as string, 10) : undefined,
         args.offset ? parseInt(args.offset as string, 10) : undefined,
       );
-      return JSON.stringify(result, null, 2);
+      // Look up listing URLs from offers for each SKU
+      const data = result as { inventoryItems?: Array<{ sku: string }> };
+      const listingUrls: Record<string, string> = {};
+      if (data.inventoryItems) {
+        await Promise.all(data.inventoryItems.map(async (item) => {
+          try {
+            const offers = await api.getOffers(item.sku) as {
+              offers?: Array<{ listing?: { listingId?: string } }>;
+            };
+            const listingId = offers.offers?.[0]?.listing?.listingId;
+            if (listingId) {
+              listingUrls[item.sku] = `https://www.ebay.com/itm/${listingId}`;
+            }
+          } catch {
+            // Skip — offer lookup may fail for unpublished items
+          }
+        }));
+      }
+      return summarizeInventory(result, listingUrls);
     }
 
     case 'ebay_get_policies': {
@@ -746,20 +512,26 @@ function saveSession(groupFolder: string, sessionId: string, session: LocalSessi
 
 // --- System prompt ---
 
-function buildSystemPrompt(groupFolder: string, chatJid: string): string {
+function buildSystemPrompt(groupFolder: string, _chatJid: string): string {
   const parts: string[] = [];
 
-  parts.push(`You are a helpful assistant. Your name is ${process.env.ASSISTANT_NAME || 'Andy'}.`);
-  parts.push(`You are responding in group "${groupFolder}" (chat: ${chatJid}).`);
-  parts.push('You have tools available to send messages, schedule tasks, and interact with Discord/X.');
-  parts.push('Use tools when the user asks you to perform actions. Respond conversationally for questions.');
+  parts.push(`You are Andy, an eBay assistant. You respond in plain text.
+
+CRITICAL RULES:
+- Your text reply is sent automatically. Do NOT call send_message to reply — just respond with text.
+- Only call tools that are directly relevant to the user's request. Do NOT call unrelated tools.
+- Do NOT read MEMORY.md unless the user asks about their saved notes.
+- Do NOT write to MEMORY.md unless the user explicitly asks you to remember something.
+- When you get tool results, summarize them clearly and stop. Do not keep calling more tools.
+- If a tool returns an error, report it to the user and stop. Do not retry with different parameters.
+- NEVER fabricate search queries or data the user didn't ask for.`);
 
   // Load group CLAUDE.md if it exists
   const claudeMdPath = path.join(GROUPS_DIR, groupFolder, 'CLAUDE.md');
   try {
     if (fs.existsSync(claudeMdPath)) {
       const claudeMd = fs.readFileSync(claudeMdPath, 'utf-8');
-      parts.push('\n--- Group Memory ---');
+      parts.push('\n--- Group Instructions ---');
       parts.push(claudeMd);
     }
   } catch {
@@ -769,7 +541,9 @@ function buildSystemPrompt(groupFolder: string, chatJid: string): string {
   return parts.join('\n');
 }
 
-// --- Ollama API call ---
+// --- LLM API call with retry ---
+
+const MAX_RETRIES = 2;
 
 async function callOllama(
   config: FullLocalLlmConfig,
@@ -789,26 +563,96 @@ async function callOllama(
     body.tools = tools;
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), config.timeout);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (config.apiKey) {
+    headers['Authorization'] = `Bearer ${config.apiKey}`;
+  }
 
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), config.timeout);
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Ollama API error ${response.status}: ${text}`);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
     }
 
-    return (await response.json()) as ChatCompletionResponse;
-  } finally {
-    clearTimeout(timeoutId);
+    if (response.ok) {
+      return (await response.json()) as ChatCompletionResponse;
+    }
+
+    const text = await response.text();
+
+    // Rate limited (429 or 413 on Groq) — wait and retry
+    if ((response.status === 429 || response.status === 413) && attempt < MAX_RETRIES) {
+      // Parse wait time from error message (e.g. "Please try again in 17.3s")
+      const waitMatch = text.match(/try again in (\d+\.?\d*)s/);
+      const waitSecs = waitMatch ? parseFloat(waitMatch[1]) : 20;
+      logger.info({ attempt, waitSecs }, 'Rate limited, waiting before retry');
+      await new Promise(resolve => setTimeout(resolve, waitSecs * 1000 + 1000));
+      continue;
+    }
+
+    // Not a retryable error — handle normally
+    {
+
+      // Handle Groq tool_use_failed: model generated a response but in wrong format
+      // Try to salvage the response instead of crashing
+      if (response.status === 400 && text.includes('tool_use_failed')) {
+        try {
+          const errData = JSON.parse(text);
+          const failed = errData?.error?.failed_generation || '';
+
+          // Try to parse the failed generation as a tool call and return it properly
+          const fnMatch = failed.match(/<function=(\w+)>([\s\S]*?)<\/function>/);
+          if (fnMatch) {
+            const [, fnName, fnArgs] = fnMatch;
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant' as const,
+                  content: null,
+                  tool_calls: [{
+                    id: `call_${Date.now()}`,
+                    type: 'function' as const,
+                    function: { name: fnName, arguments: fnArgs },
+                  }],
+                },
+                finish_reason: 'tool_calls',
+              }],
+            };
+          }
+
+          // Fallback: extract any text content
+          const textMatch = failed.match(/"text"\s*:\s*"([^"]+)"/);
+          if (textMatch) {
+            return {
+              choices: [{
+                message: { role: 'assistant' as const, content: textMatch[1] },
+                finish_reason: 'stop',
+              }],
+            };
+          }
+        } catch {
+          // Fall through to normal error
+        }
+      }
+
+      throw new Error(`LLM API error ${response.status}: ${text}`);
+    }
   }
+
+  throw new Error('LLM API: max retries exceeded');
 }
 
 // --- Main entry point ---
@@ -844,15 +688,23 @@ export async function runLocalAgent(
   // Load or create session
   const { session, id: sessionId } = loadSession(input.groupFolder, input.sessionId);
 
-  // Build messages: system + session history + new user message
+  // Trim session history to last N messages to maintain conversation context
+  const MAX_HISTORY = 20;
+  const recentHistory = session.messages.slice(-MAX_HISTORY);
+
+  // Build messages: system + trimmed history + new user message
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
-    ...session.messages,
+    ...recentHistory,
     { role: 'user', content: input.prompt },
   ];
 
-  // Tool call loop
+  // Tool call loop with guardrails
   let iterations = 0;
+  const toolCallCounts: Record<string, number> = {};
+  const MAX_SAME_TOOL = 3; // Max times the same tool can be called per request
+  const MAX_SEND_MESSAGES = 2; // Max send_message calls per request
+
   try {
     while (iterations < MAX_TOOL_ITERATIONS) {
       iterations++;
@@ -893,30 +745,56 @@ export async function runLocalAgent(
         };
       }
 
-      // Execute each tool call
+      // Execute each tool call with guardrails
+      let loopAborted = false;
       for (const toolCall of assistantMessage.tool_calls) {
+        const toolName = toolCall.function.name;
+        toolCallCounts[toolName] = (toolCallCounts[toolName] || 0) + 1;
+
+        // Guardrail: block repeated tool abuse
+        const sendMessageLimit = toolName === 'send_message' ? MAX_SEND_MESSAGES : MAX_SAME_TOOL;
+        if (toolCallCounts[toolName] > sendMessageLimit) {
+          logger.warn(
+            { tool: toolName, count: toolCallCounts[toolName], group: group.name },
+            'Tool call limit reached, aborting loop',
+          );
+          messages.push({
+            role: 'tool',
+            content: `Tool "${toolName}" has been called too many times. Stop calling tools and respond to the user with what you have.`,
+            tool_call_id: toolCall.id,
+          });
+          loopAborted = true;
+          continue;
+        }
+
         let args: Record<string, unknown>;
         try {
           args = JSON.parse(toolCall.function.arguments);
         } catch {
           args = {};
           logger.warn(
-            { tool: toolCall.function.name, rawArgs: toolCall.function.arguments },
+            { tool: toolName, rawArgs: toolCall.function.arguments },
             'Failed to parse tool arguments',
           );
         }
 
         logger.debug(
-          { tool: toolCall.function.name, args },
+          { tool: toolName, args },
           'Executing local tool',
         );
 
         let result: string;
         try {
-          result = await executeTool(toolCall.function.name, args, toolCtx);
+          result = await executeTool(toolName, args, toolCtx);
         } catch (err) {
           result = `Tool error: ${err instanceof Error ? err.message : String(err)}`;
-          logger.error({ tool: toolCall.function.name, err }, 'Tool execution error');
+          logger.error({ tool: toolName, err }, 'Tool execution error');
+        }
+
+        // Truncate tool results to stay within token limits
+        const MAX_TOOL_RESULT_CHARS = 1200;
+        if (result.length > MAX_TOOL_RESULT_CHARS) {
+          result = result.slice(0, MAX_TOOL_RESULT_CHARS) + '\n... (truncated)';
         }
 
         messages.push({
@@ -925,22 +803,44 @@ export async function runLocalAgent(
           tool_call_id: toolCall.id,
         });
       }
+
+      // If guardrails triggered, give model one more chance to produce a text response
+      if (loopAborted) {
+        // Do one final call without tools to force a text response
+        const finalResponse = await callOllama(config, messages, []);
+        const finalContent = finalResponse.choices?.[0]?.message?.content || '';
+
+        session.messages = messages.slice(1);
+        saveSession(input.groupFolder, sessionId, session);
+
+        logger.info(
+          { group: group.name, iterations, durationMs: Date.now() - startTime },
+          'Local agent completed (guardrail forced text response)',
+        );
+
+        return {
+          status: 'success',
+          result: finalContent || 'Sorry, I had trouble processing that. Please try again.',
+          newSessionId: sessionId,
+        };
+      }
     }
 
-    // Hit max iterations
+    // Hit max iterations — do one final call without tools to force a summary
     logger.warn(
       { group: group.name, iterations: MAX_TOOL_ITERATIONS },
-      'Local agent hit max tool iterations',
+      'Local agent hit max tool iterations, forcing final response',
     );
 
-    // Return the last assistant content if any
-    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content);
+    const finalResponse = await callOllama(config, messages, []);
+    const finalContent = finalResponse.choices?.[0]?.message?.content || '';
+
     session.messages = messages.slice(1);
     saveSession(input.groupFolder, sessionId, session);
 
     return {
       status: 'success',
-      result: lastAssistant?.content || 'I reached my processing limit. Please try again.',
+      result: finalContent || 'I reached my processing limit. Please try again.',
       newSessionId: sessionId,
     };
   } catch (err) {
